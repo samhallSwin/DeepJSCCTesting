@@ -25,6 +25,25 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## GPU setup (optional)
+
+If you want GPU training, install GPU dependencies in addition to the base requirements:
+
+```bash
+pip install -r requirements.txt -r requirements-gpu.txt
+```
+
+Then verify TensorFlow sees your GPU:
+
+```bash
+python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+```
+
+The CLI also supports:
+
+- `--require-gpu`: fail fast if TensorFlow does not detect a GPU
+- `--mixed-precision`: enable `mixed_float16` for faster training on modern GPUs
+
 ## Train
 
 ```bash
@@ -36,7 +55,9 @@ python run_deepjscc.py train \
   --snr-db 10 \
   --channel-uses 256 \
   --latent-channels 128 \
-  --output-dir artifacts/deepjscc_awgn_snr10
+  --output-dir artifacts/deepjscc_awgn_snr10 \
+  --require-gpu \
+  --mixed-precision
 ```
 
 
@@ -62,7 +83,9 @@ python run_deepjscc.py train \
   --channel-uses 256 \
   --latent-channels 128 \
   --local-eurosat-dir ../datasets/EuroSAT_RGB \
-  --output-dir artifacts/deepjscc_awgn_snr10
+  --output-dir artifacts/deepjscc_awgn_snr10 \
+  --require-gpu \
+  --mixed-precision
 ```
 
 For local-folder mode, splits are controlled by:

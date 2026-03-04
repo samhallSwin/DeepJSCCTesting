@@ -14,6 +14,23 @@ from deepjscc.data import build_datasets
 from deepjscc.model import DeepJSCC, PSNRMetric
 
 
+def configure_runtime(args):
+    gpus = tf.config.list_physical_devices("GPU")
+    if args.require_gpu and not gpus:
+        raise RuntimeError(
+            "No GPU detected by TensorFlow. Install GPU TensorFlow deps and verify CUDA driver/runtime compatibility."
+        )
+
+    for gpu in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError:
+            pass
+
+    if args.mixed_precision:
+        tf.keras.mixed_precision.set_global_policy("mixed_float16")
+
+
 def build_model(args):
     model = DeepJSCC(
         image_size=args.image_size,
@@ -115,6 +132,8 @@ def parser():
         sp.add_argument("--local-train-fraction", type=float, default=0.8)
         sp.add_argument("--local-val-fraction", type=float, default=0.1)
         sp.add_argument("--split-seed", type=int, default=42)
+        sp.add_argument("--require-gpu", action="store_true")
+        sp.add_argument("--mixed-precision", action="store_true")
 
     p_train = sub.add_parser("train", help="Train DeepJSCC model")
     add_shared(p_train)
@@ -132,6 +151,7 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    configure_runtime(args)
     args.func(args)
 
 
