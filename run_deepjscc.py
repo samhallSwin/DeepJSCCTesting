@@ -39,6 +39,10 @@ def train(args):
         val_split=args.val_split,
         test_split=args.test_split,
         data_dir=args.data_dir,
+        local_eurosat_dir=args.local_eurosat_dir,
+        local_train_fraction=args.local_train_fraction,
+        local_val_fraction=args.local_val_fraction,
+        split_seed=args.split_seed,
     )
 
     model = build_model(args)
@@ -76,6 +80,10 @@ def evaluate(args):
         val_split=args.val_split,
         test_split=args.test_split,
         data_dir=args.data_dir,
+        local_eurosat_dir=args.local_eurosat_dir,
+        local_train_fraction=args.local_train_fraction,
+        local_val_fraction=args.local_val_fraction,
+        split_seed=args.split_seed,
     )
 
     model = build_model(args)
@@ -103,6 +111,10 @@ def parser():
         sp.add_argument("--train-split", type=str, default="train[:80%]")
         sp.add_argument("--val-split", type=str, default="train[80%:90%]")
         sp.add_argument("--test-split", type=str, default="train[90%:]")
+        sp.add_argument("--local-eurosat-dir", type=str, default=None)
+        sp.add_argument("--local-train-fraction", type=float, default=0.8)
+        sp.add_argument("--local-val-fraction", type=float, default=0.1)
+        sp.add_argument("--split-seed", type=int, default=42)
 
     p_train = sub.add_parser("train", help="Train DeepJSCC model")
     add_shared(p_train)

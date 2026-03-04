@@ -39,6 +39,39 @@ python run_deepjscc.py train \
   --output-dir artifacts/deepjscc_awgn_snr10
 ```
 
+
+## Prefer local EuroSAT_RGB dataset (recommended)
+
+If you already have EuroSAT RGB extracted as class folders of JPG files, the loader now checks these paths first (in order):
+
+- `../datasets/EuroSAT_RGB`
+- `../../datasets/EuroSAT_RGB`
+- `datasets/EuroSAT_RGB`
+
+If any exists, it is used instead of TFDS download. You can also set an explicit path with `--local-eurosat-dir`.
+
+Example:
+
+```bash
+python run_deepjscc.py train \
+  --image-size 64 \
+  --batch-size 64 \
+  --epochs 2 \
+  --channel-type awgn \
+  --snr-db 10 \
+  --channel-uses 256 \
+  --latent-channels 128 \
+  --local-eurosat-dir ../datasets/EuroSAT_RGB \
+  --output-dir artifacts/deepjscc_awgn_snr10
+```
+
+For local-folder mode, splits are controlled by:
+
+- `--local-train-fraction` (default `0.8`)
+- `--local-val-fraction` (default `0.1`)
+- test fraction is the remainder
+- `--split-seed` controls deterministic split shuffling
+
 ## Evaluate
 
 ```bash
