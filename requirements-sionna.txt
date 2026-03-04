@@ -1,0 +1,6 @@
+# Optional: Sionna-based LDPC backend for traditional/comparison scripts.
+# Install on top of base requirements:
+#   pip install -r requirements.txt -r requirements-sionna.txt
+#
+# Use a version compatible with your TensorFlow/CUDA stack.
+sionna>=0.19

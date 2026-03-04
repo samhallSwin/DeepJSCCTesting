@@ -27,6 +27,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Optional Sionna backend for real LDPC:
+
+```bash
+pip install -r requirements.txt -r requirements-sionna.txt
+```
+
 ## GPU setup (optional)
 
 If you want GPU training, install GPU dependencies in addition to the base requirements:
@@ -166,12 +172,41 @@ python traditional_baseline.py \
   --output-dir artifacts/traditional_baseline_awgn_snr10
 ```
 
+Real LDPC mode (custom sparse LDPC + min-sum decoder, AWGN only):
+
+```bash
+python traditional_baseline.py \
+  --image-size 64 \
+  --batch-size 64 \
+  --channel-type awgn \
+  --snr-db 10 \
+  --channel-uses 256 \
+  --ldpc-rate 0.5 \
+  --mod-order 4 \
+  --codec bpg \
+  --link-model real-ldpc \
+  --ldpc-backend custom \
+  --ldpc-codeword-length 512 \
+  --ldpc-row-weight 3 \
+  --ldpc-iters 30 \
+  --num-images 512 \
+  --output-dir artifacts/traditional_baseline_real_ldpc
+```
+
+Use `--ldpc-backend sionna` to run the same real-LDPC flow with Sionna 5G LDPC blocks (requires Sionna installed).
+
 Key fairness controls:
 
 - `--channel-type`, `--snr-db`, `--rician-k`
 - `--channel-uses` (same channel-use budget as DeepJSCC)
 - `--ldpc-rate` (source bits = coded bits * rate)
 - `--mod-order` (bits per channel use = `log2(mod_order)`)
+- `--link-model`:
+  - `ideal` (capacity-threshold model)
+  - `real-ldpc` (explicit LDPC encode/decode over AWGN; currently `mod-order` 2 or 4)
+- `--ldpc-backend` (used when `--link-model real-ldpc`):
+  - `custom` (in-repo sparse LDPC + min-sum)
+  - `sionna` (Sionna 5G LDPC)
 
 Codec behavior:
 
@@ -186,8 +221,10 @@ Outputs:
 
 Modeling note:
 
-- The LDPC link is modeled as an idealized near-capacity decoder:
-  decode success if coded spectral efficiency is below estimated channel capacity; otherwise outage.
+- `ideal` link model: decode success if coded spectral efficiency is below estimated channel capacity; otherwise outage.
+- `real-ldpc` link model: uses a custom sparse systematic LDPC code with min-sum decoding.
+- In `real-ldpc`, the script computes an `effective_source_bits_budget` that accounts for LDPC block sizing and modulation padding, to avoid avoidable `channel_use_budget_exceeded` cases.
+- If the codec cannot compress an image down to that effective budget (even at lowest quality), the image is marked failed with reason `compression_budget_unreachable`.
 
 ## Compare DeepJSCC vs traditional on same random images
 
@@ -207,8 +244,18 @@ python compare_pipelines.py \
   --ldpc-rate 0.5 \
   --mod-order 4 \
   --codec bpg \
+  --link-model ideal \
+  --ldpc-backend custom \
   --output-dir artifacts/pipeline_comparison_awgn_snr10
 ```
+
+To use explicit LDPC in the comparison script, set:
+
+- `--link-model real-ldpc`
+- `--channel-type awgn`
+- `--mod-order 2` or `--mod-order 4`
+- `--ldpc-backend custom` or `--ldpc-backend sionna`
+- optional tuning: `--ldpc-codeword-length`, `--ldpc-row-weight`, `--ldpc-iters`
 
 Output structure:
 

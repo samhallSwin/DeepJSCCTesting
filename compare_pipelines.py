@@ -16,11 +16,15 @@ from deepjscc.data import sample_random_images
 from deepjscc.model import MODEL_VARIANTS, DeepJSCC
 from traditional_baseline import (
     _channel_capacity_bpcu,
-    _compress_and_reconstruct,
     _mae,
     _psnr,
     _tensor_to_u8,
+    compress_image_to_payload,
+    decode_payload_to_image,
+    max_source_bits_for_real_ldpc,
+    simulate_real_ldpc_link,
 )
+from deepjscc.sionna_link import simulate_real_ldpc_link_sionna
 
 
 def parser() -> argparse.ArgumentParser:
@@ -53,6 +57,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--bpg-q-min", type=int, default=0)
     p.add_argument("--bpg-q-max", type=int, default=51)
     p.add_argument("--capacity-mc-samples", type=int, default=20000)
+    p.add_argument("--link-model", choices=["ideal", "real-ldpc"], default="ideal")
+    p.add_argument("--ldpc-backend", choices=["custom", "sionna"], default="custom")
+    p.add_argument("--ldpc-codeword-length", type=int, default=512)
+    p.add_argument("--ldpc-row-weight", type=int, default=3)
+    p.add_argument("--ldpc-iters", type=int, default=30)
 
     p.add_argument("--output-dir", type=str, default="artifacts/pipeline_comparison")
     return p
@@ -83,6 +92,18 @@ def main():
         raise ValueError("--mod-order must be a power of two >= 2.")
     if args.channel_uses <= 0:
         raise ValueError("--channel-uses must be > 0.")
+    if args.link_model == "real-ldpc" and args.channel_type != "awgn":
+        raise ValueError("--link-model real-ldpc currently supports --channel-type awgn only.")
+    if args.link_model == "real-ldpc" and args.mod_order not in (2, 4):
+        raise ValueError("--link-model real-ldpc currently supports --mod-order 2 or 4.")
+    if args.link_model == "real-ldpc" and args.ldpc_backend == "sionna":
+        try:
+            import sionna  # noqa: F401
+        except Exception as exc:
+            raise RuntimeError(
+                "Sionna backend requested but `sionna` is not installed in this environment. "
+                "Install with: pip install -r requirements.txt -r requirements-sionna.txt"
+            ) from exc
 
     out = Path(args.output_dir)
     originals_dir = out / "originals"
@@ -109,10 +130,22 @@ def main():
 
     bits_per_channel_use = math.log2(args.mod_order)
     source_bits_budget = int(args.channel_uses * bits_per_channel_use * args.ldpc_rate)
+    ldpc_fit_bits = None
+    ldpc_fit_details = None
+    effective_source_bits_budget = source_bits_budget
+    if args.link_model == "real-ldpc":
+        ldpc_fit_bits, ldpc_fit_details = max_source_bits_for_real_ldpc(
+            channel_uses=args.channel_uses,
+            mod_order=args.mod_order,
+            ldpc_codeword_length=args.ldpc_codeword_length,
+            ldpc_rate=args.ldpc_rate,
+        )
+        effective_source_bits_budget = min(source_bits_budget, ldpc_fit_bits)
+
     image_pixels = args.image_size * args.image_size
     raw_bits_per_image = image_pixels * 3 * 8
-    target_source_bpp = source_bits_budget / image_pixels
-    target_compression_ratio = raw_bits_per_image / max(1, source_bits_budget)
+    target_source_bpp = effective_source_bits_budget / image_pixels
+    target_compression_ratio = raw_bits_per_image / max(1, effective_source_bits_budget)
     channel_uses_per_pixel = args.channel_uses / image_pixels
     capacity_bpcu = _channel_capacity_bpcu(
         channel_type=args.channel_type,
@@ -131,19 +164,58 @@ def main():
         original = images[i]
         deep = deepjscc_recon[i]
 
-        trad_source_recon, info = _compress_and_reconstruct(
+        payload, info = compress_image_to_payload(
             image01=original,
             codec=args.codec,
-            target_bits=source_bits_budget,
+            target_bits=effective_source_bits_budget,
             bpg_q_min=args.bpg_q_min,
             bpg_q_max=args.bpg_q_max,
         )
-        coded_rate_bpcu = (info["source_bits"] / args.ldpc_rate) / args.channel_uses
-        trad_success = coded_rate_bpcu <= capacity_bpcu
-        if trad_success:
-            trad = trad_source_recon
-        else:
+        if args.link_model == "real-ldpc" and info["source_bits"] > effective_source_bits_budget:
+            trad_success = False
+            coded_rate_bpcu = (info["source_bits"] / args.ldpc_rate) / args.channel_uses
             trad = tf.zeros_like(original)
+        elif args.link_model == "ideal":
+            coded_rate_bpcu = (info["source_bits"] / args.ldpc_rate) / args.channel_uses
+            trad_success = coded_rate_bpcu <= capacity_bpcu
+            if trad_success:
+                trad = decode_payload_to_image(payload, info["codec_used"])
+            else:
+                trad = tf.zeros_like(original)
+        else:
+            if args.ldpc_backend == "sionna":
+                trad_success, rx_payload, link_info = simulate_real_ldpc_link_sionna(
+                    payload=payload,
+                    channel_uses=args.channel_uses,
+                    ldpc_rate=args.ldpc_rate,
+                    mod_order=args.mod_order,
+                    snr_db=args.snr_db,
+                    codeword_length=args.ldpc_codeword_length,
+                    bp_iters=args.ldpc_iters,
+                    seed=args.seed + i,
+                )
+            else:
+                trad_success, rx_payload, link_info = simulate_real_ldpc_link(
+                    payload=payload,
+                    channel_uses=args.channel_uses,
+                    ldpc_rate=args.ldpc_rate,
+                    mod_order=args.mod_order,
+                    snr_db=args.snr_db,
+                    codeword_length=args.ldpc_codeword_length,
+                    row_weight=args.ldpc_row_weight,
+                    bp_iters=args.ldpc_iters,
+                    seed=args.seed + i,
+                )
+            coded_rate_bpcu = link_info.get("coded_bits", 0) / max(1, args.channel_uses)
+            if trad_success:
+                try:
+                    trad = decode_payload_to_image(rx_payload, info["codec_used"])
+                except Exception:
+                    trad_success = False
+                    trad = tf.zeros_like(original)
+            else:
+                trad = tf.zeros_like(original)
+        if not trad_success:
             traditional_outages += 1
 
         d_psnr = _psnr(original, deep)
@@ -202,6 +274,9 @@ def main():
         },
         "compression_view": {
             "source_bits_budget": source_bits_budget,
+            "effective_source_bits_budget": effective_source_bits_budget,
+            "real_ldpc_fit_source_bits_max": ldpc_fit_bits,
+            "real_ldpc_fit_details": ldpc_fit_details,
             "target_source_bpp": target_source_bpp,
             "target_compression_ratio": target_compression_ratio,
             "equivalent_mapping": "bpp_eq = channel_uses * log2(mod_order) * ldpc_rate / (H*W)",
@@ -215,10 +290,13 @@ def main():
         },
         "traditional": {
             "codec_requested": args.codec,
+            "link_model": args.link_model,
+            "ldpc_backend": args.ldpc_backend,
             "ldpc_rate": args.ldpc_rate,
             "mod_order": args.mod_order,
             "bits_per_channel_use": bits_per_channel_use,
             "source_bits_budget": source_bits_budget,
+            "effective_source_bits_budget": effective_source_bits_budget,
             "target_source_bpp": target_source_bpp,
             "target_compression_ratio": target_compression_ratio,
             "mean_source_bits": mean_traditional_source_bits,
@@ -233,6 +311,11 @@ def main():
             "outage_rate": traditional_outages / max(1, args.num_images),
             "mean_psnr": float(np.mean(traditional_psnr)),
             "mean_mae": float(np.mean(traditional_mae)),
+            "ldpc_impl": {
+                "codeword_length": args.ldpc_codeword_length,
+                "row_weight": args.ldpc_row_weight,
+                "bp_iters": args.ldpc_iters,
+            },
         },
         "output_dir": str(out.resolve()),
     }
