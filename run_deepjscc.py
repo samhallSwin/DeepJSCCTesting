@@ -10,7 +10,7 @@ from pathlib import Path
 import tensorflow as tf
 
 from deepjscc.channels import CHANNEL_CHOICES
-from deepjscc.data import build_datasets
+from deepjscc.data import build_datasets, sample_random_images
 from deepjscc.model import DeepJSCC, PSNRMetric
 
 
@@ -104,11 +104,62 @@ def evaluate(args):
     )
 
     model = build_model(args)
+    # Subclassed models must be built before loading weights.
+    _ = model(tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32), training=False)
     if args.weights:
         model.load_weights(args.weights)
 
     metrics = model.evaluate(test_ds, return_dict=True)
     print(json.dumps(metrics, indent=2))
+
+
+def sample(args):
+    images = sample_random_images(
+        image_size=args.image_size,
+        num_images=args.num_images,
+        data_dir=args.data_dir,
+        local_eurosat_dir=args.local_eurosat_dir,
+        seed=args.seed,
+    )
+
+    model = build_model(args)
+    _ = model(tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32), training=False)
+    model.load_weights(args.weights)
+
+    recon = model(images, training=False)
+    recon = tf.cast(recon, tf.float32)
+    recon = tf.clip_by_value(recon, 0.0, 1.0)
+
+    originals_dir = Path(args.output_dir) / "originals"
+    recons_dir = Path(args.output_dir) / "reconstructions"
+    comparisons_dir = Path(args.output_dir) / "comparisons"
+    originals_dir.mkdir(parents=True, exist_ok=True)
+    recons_dir.mkdir(parents=True, exist_ok=True)
+    comparisons_dir.mkdir(parents=True, exist_ok=True)
+
+    n = images.shape[0]
+    for i in range(n):
+        orig_u8 = tf.image.convert_image_dtype(tf.clip_by_value(images[i], 0.0, 1.0), tf.uint8)
+        recon_u8 = tf.image.convert_image_dtype(recon[i], tf.uint8)
+        side_by_side = tf.concat([orig_u8, recon_u8], axis=1)
+
+        stem = f"img_{i:03d}"
+        tf.io.write_file(str(originals_dir / f"{stem}.jpg"), tf.io.encode_jpeg(orig_u8))
+        tf.io.write_file(str(recons_dir / f"{stem}.jpg"), tf.io.encode_jpeg(recon_u8))
+        tf.io.write_file(str(comparisons_dir / f"{stem}.jpg"), tf.io.encode_jpeg(side_by_side))
+
+    manifest = {
+        "num_images": int(n),
+        "weights": str(args.weights),
+        "channel_type": args.channel_type,
+        "snr_db": args.snr_db,
+        "image_size": args.image_size,
+        "output_dir": str(Path(args.output_dir).resolve()),
+    }
+    with open(Path(args.output_dir) / "manifest.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+
+    print(json.dumps(manifest, indent=2))
 
 
 def parser():
@@ -145,6 +196,14 @@ def parser():
     add_shared(p_eval)
     p_eval.add_argument("--weights", type=str, default=None)
     p_eval.set_defaults(func=evaluate)
+
+    p_sample = sub.add_parser("sample", help="Save random original/reconstruction JPEGs")
+    add_shared(p_sample)
+    p_sample.add_argument("--weights", type=str, required=True)
+    p_sample.add_argument("--num-images", type=int, default=8)
+    p_sample.add_argument("--seed", type=int, default=42)
+    p_sample.add_argument("--output-dir", type=str, default="artifacts/deepjscc_samples")
+    p_sample.set_defaults(func=sample)
 
     return p
 

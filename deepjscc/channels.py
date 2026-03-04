@@ -18,6 +18,9 @@ def snr_db_to_noise_std(snr_db: tf.Tensor) -> tf.Tensor:
 def _to_complex(x_ri: tf.Tensor) -> tf.Tensor:
     """Convert [..., 2 * N] real-imag tensor to complex [..., N]."""
     real, imag = tf.split(x_ri, num_or_size_splits=2, axis=-1)
+    if real.dtype in (tf.float16, tf.bfloat16):
+        real = tf.cast(real, tf.float32)
+        imag = tf.cast(imag, tf.float32)
     return tf.complex(real, imag)
 
 
@@ -39,6 +42,7 @@ def apply_channel(
     rician_k: float = 5.0,
 ) -> tf.Tensor:
     """Apply selected channel to real-imag symbols and return same shape."""
+    input_dtype = symbols_ri.dtype
     channel_type = channel_type.lower()
     if channel_type not in CHANNEL_CHOICES:
         raise ValueError(f"Unsupported channel type '{channel_type}'. Use {CHANNEL_CHOICES}.")
@@ -47,7 +51,7 @@ def apply_channel(
     x_c = normalize_complex_power(x_c)
 
     if channel_type == "none":
-        return _to_ri(x_c)
+        return tf.cast(_to_ri(x_c), input_dtype)
 
     batch_shape = tf.shape(x_c)
     noise_std = snr_db_to_noise_std(tf.cast(snr_db, tf.float32))
@@ -78,4 +82,4 @@ def apply_channel(
         y_c = h * x_c + noise
         y_c = y_c / (h + 1e-8)
 
-    return _to_ri(y_c)
+    return tf.cast(_to_ri(y_c), input_dtype)

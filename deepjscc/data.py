@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import random
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
@@ -19,6 +20,19 @@ def _preprocess(image, _label, image_size: int):
     image = tf.image.resize(image, (image_size, image_size), method="bilinear")
     image = tf.cast(image, tf.float32) / 255.0
     return image, image
+
+
+def _preprocess_image(image: tf.Tensor, image_size: int) -> tf.Tensor:
+    image = tf.image.resize(image, (image_size, image_size), method="bilinear")
+    return tf.cast(image, tf.float32) / 255.0
+
+
+def _list_local_image_files(local_eurosat_dir: str) -> list[str]:
+    class_patterns = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]
+    files: list[str] = []
+    for pattern in class_patterns:
+        files.extend(str(p) for p in Path(local_eurosat_dir).glob(f"*/*{pattern[1:]}"))
+    return sorted(files)
 
 
 def _find_local_eurosat(local_eurosat_dir: str | None) -> str | None:
@@ -41,10 +55,7 @@ def _build_local_datasets(
     val_fraction: float,
     split_seed: int,
 ):
-    class_patterns = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]
-    files: list[str] = []
-    for pattern in class_patterns:
-        files.extend(str(p) for p in Path(local_eurosat_dir).glob(f"*/*{pattern[1:]}"))
+    files = _list_local_image_files(local_eurosat_dir)
 
     if not files:
         raise ValueError(
@@ -85,6 +96,53 @@ def _build_local_datasets(
         return ds.batch(batch_size).prefetch(autotune)
 
     return prep(train_paths, True), prep(val_paths, False), prep(test_paths, False)
+
+
+def sample_random_images(
+    image_size: int,
+    num_images: int,
+    data_dir: str | None = None,
+    local_eurosat_dir: str | None = None,
+    seed: int = 42,
+) -> tf.Tensor:
+    """Sample random images from the full EuroSAT dataset and preprocess to [0, 1]."""
+    if num_images <= 0:
+        raise ValueError("--num-images must be > 0.")
+
+    local_path = _find_local_eurosat(local_eurosat_dir)
+    if local_path:
+        print(f"Sampling random images from local EuroSAT_RGB at: {local_path}")
+        files = _list_local_image_files(local_path)
+        if not files:
+            raise ValueError(
+                f"No image files found under '{local_path}'. Expected class subfolders with image files."
+            )
+
+        rng = random.Random(seed)
+        if num_images <= len(files):
+            selected = rng.sample(files, k=num_images)
+        else:
+            selected = [rng.choice(files) for _ in range(num_images)]
+
+        images = []
+        for path in selected:
+            image = tf.io.read_file(path)
+            image = tf.image.decode_image(image, channels=3, expand_animations=False)
+            image.set_shape([None, None, 3])
+            images.append(_preprocess_image(image, image_size))
+        return tf.stack(images, axis=0)
+
+    print("Local EuroSAT_RGB dataset not found; sampling from tensorflow_datasets eurosat/rgb.")
+    ds = tfds.load(name="eurosat/rgb", split="train", as_supervised=True, data_dir=data_dir)
+    ds = ds.shuffle(buffer_size=27000, seed=seed, reshuffle_each_iteration=False).take(num_images)
+
+    images = []
+    for image, _ in ds:
+        images.append(_preprocess_image(image, image_size))
+
+    if not images:
+        raise ValueError("Could not sample any images from eurosat/rgb.")
+    return tf.stack(images, axis=0)
 
 
 def build_datasets(

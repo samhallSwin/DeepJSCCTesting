@@ -16,6 +16,7 @@ This repository provides a command-line DeepJSCC baseline to reconstruct **64x64
   - `--channel-uses`
   - `--latent-channels`
   - train/val/test TFDS splits
+- Random image sampling utility to save original/reconstruction JPEGs for visual comparison.
 
 ## Install
 
@@ -105,6 +106,34 @@ python run_deepjscc.py evaluate \
   --snr-db 5 \
   --weights artifacts/deepjscc_awgn_snr10/best.weights.h5
 ```
+
+## Save random visual comparisons
+
+You can sample random images from the full dataset (local EuroSAT folder if available, otherwise TFDS), run them through a trained model, and save JPEG outputs for side-by-side inspection.
+
+```bash
+python run_deepjscc.py sample \
+  --image-size 64 \
+  --channel-type rayleigh \
+  --snr-db 5 \
+  --weights artifacts/deepjscc_awgn_snr10/best.weights.h5 \
+  --num-images 8 \
+  --seed 42 \
+  --output-dir artifacts/deepjscc_samples
+```
+
+Key options:
+
+- `--num-images` number of random samples to save (default `8`)
+- `--seed` random seed for reproducible sampling
+- `--output-dir` output folder (default `artifacts/deepjscc_samples`)
+
+Output structure:
+
+- `originals/` original input tiles as JPEG
+- `reconstructions/` model outputs as JPEG
+- `comparisons/` side-by-side `original | reconstruction` JPEG pairs
+- `manifest.json` run metadata
 
 ## Notes on future BPG+LDPC comparison
 
