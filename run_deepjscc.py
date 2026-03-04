@@ -11,7 +11,7 @@ import tensorflow as tf
 
 from deepjscc.channels import CHANNEL_CHOICES
 from deepjscc.data import build_datasets, sample_random_images
-from deepjscc.model import DeepJSCC, PSNRMetric
+from deepjscc.model import MODEL_VARIANTS, DeepJSCC, PSNRMetric
 
 
 def configure_runtime(args):
@@ -36,6 +36,7 @@ def build_model(args):
         image_size=args.image_size,
         channel_uses=args.channel_uses,
         latent_channels=args.latent_channels,
+        model_variant=args.model_variant,
         channel_type=args.channel_type,
         snr_db=args.snr_db,
         rician_k=args.rician_k,
@@ -46,6 +47,34 @@ def build_model(args):
         metrics=[PSNRMetric(), tf.keras.metrics.MeanAbsoluteError(name="mae")],
     )
     return model
+
+
+def write_architecture_report(args, model: DeepJSCC, output_dir: Path):
+    lines: list[str] = []
+    lines.append("DeepJSCC Architecture Report")
+    lines.append("")
+    lines.append(f"model_variant: {args.model_variant}")
+    lines.append(f"image_size: {args.image_size}")
+    lines.append(f"channel_uses: {args.channel_uses}")
+    lines.append(f"latent_channels: {args.latent_channels}")
+    lines.append(f"channel_type: {args.channel_type}")
+    lines.append(f"snr_db: {args.snr_db}")
+    lines.append(f"rician_k: {args.rician_k}")
+    lines.append("")
+    lines.append(f"variant_spec: {model.variant}")
+    lines.append("")
+    lines.append("Encoder Summary")
+    lines.append("-" * 80)
+    model.encoder.summary(print_fn=lines.append)
+    lines.append("")
+    lines.append("Decoder Summary")
+    lines.append("-" * 80)
+    model.decoder.summary(print_fn=lines.append)
+    lines.append("")
+    lines.append("Full Model Summary")
+    lines.append("-" * 80)
+    model.summary(print_fn=lines.append)
+    (output_dir / "architecture.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def train(args):
@@ -63,8 +92,10 @@ def train(args):
     )
 
     model = build_model(args)
+    _ = model(tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32), training=False)
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    write_architecture_report(args, model, Path(args.output_dir))
 
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
@@ -151,6 +182,7 @@ def sample(args):
     manifest = {
         "num_images": int(n),
         "weights": str(args.weights),
+        "model_variant": args.model_variant,
         "channel_type": args.channel_type,
         "snr_db": args.snr_db,
         "image_size": args.image_size,
@@ -171,6 +203,7 @@ def parser():
         sp.add_argument("--batch-size", type=int, default=64)
         sp.add_argument("--channel-uses", type=int, default=256)
         sp.add_argument("--latent-channels", type=int, default=128)
+        sp.add_argument("--model-variant", choices=tuple(MODEL_VARIANTS.keys()), default="base")
         sp.add_argument("--channel-type", choices=CHANNEL_CHOICES, default="awgn")
         sp.add_argument("--snr-db", type=float, default=10.0)
         sp.add_argument("--rician-k", type=float, default=5.0)

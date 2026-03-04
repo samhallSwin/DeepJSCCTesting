@@ -11,6 +11,7 @@ This repository provides a command-line DeepJSCC baseline to reconstruct **64x64
   - `rayleigh` (with perfect equalization in the simulator)
   - `rician` (with configurable K-factor and perfect equalization)
 - CLI-configurable key parameters, including:
+  - `--model-variant` (`tiny`, `small`, `base`, `large`)
   - `--channel-type`
   - `--snr-db`
   - `--channel-uses`
@@ -52,6 +53,7 @@ python run_deepjscc.py train \
   --image-size 64 \
   --batch-size 64 \
   --epochs 50 \
+  --model-variant base \
   --channel-type awgn \
   --snr-db 10 \
   --channel-uses 256 \
@@ -102,10 +104,20 @@ For local-folder mode, splits are controlled by:
 python run_deepjscc.py evaluate \
   --image-size 64 \
   --batch-size 64 \
+  --model-variant base \
   --channel-type rayleigh \
   --snr-db 5 \
   --weights artifacts/deepjscc_awgn_snr10/best.weights.h5
 ```
+
+`train` now writes `architecture.txt` into `--output-dir` (alongside `best.weights.h5` and `last.weights.h5`) with:
+
+- selected variant and core hyperparameters
+- encoder summary
+- decoder summary
+- full model summary
+
+When running `evaluate` or `sample`, use the same `--model-variant` used during training so the weight shapes match.
 
 ## Save random visual comparisons
 
@@ -114,6 +126,7 @@ You can sample random images from the full dataset (local EuroSAT folder if avai
 ```bash
 python run_deepjscc.py sample \
   --image-size 64 \
+  --model-variant base \
   --channel-type rayleigh \
   --snr-db 5 \
   --weights artifacts/deepjscc_awgn_snr10/best.weights.h5 \
@@ -135,12 +148,73 @@ Output structure:
 - `comparisons/` side-by-side `original | reconstruction` JPEG pairs
 - `manifest.json` run metadata
 
-## Notes on future BPG+LDPC comparison
+## Traditional baseline (BPG/JPEG + LDPC-rate-constrained link)
 
-A full BPG+LDPC pipeline is not implemented yet, but the current CLI and channel configuration were designed so a traditional baseline can later be evaluated under the same:
+You can run a traditional digital baseline under the same channel setup and channel-use budget as DeepJSCC:
 
-- channel type,
-- SNR,
-- and channel-use budget.
+```bash
+python traditional_baseline.py \
+  --image-size 64 \
+  --batch-size 64 \
+  --channel-type awgn \
+  --snr-db 10 \
+  --channel-uses 256 \
+  --ldpc-rate 0.5 \
+  --mod-order 4 \
+  --codec bpg \
+  --num-images 512 \
+  --output-dir artifacts/traditional_baseline_awgn_snr10
+```
 
-A starter placeholder command is included in `traditional_baseline.py`.
+Key fairness controls:
+
+- `--channel-type`, `--snr-db`, `--rician-k`
+- `--channel-uses` (same channel-use budget as DeepJSCC)
+- `--ldpc-rate` (source bits = coded bits * rate)
+- `--mod-order` (bits per channel use = `log2(mod_order)`)
+
+Codec behavior:
+
+- `--codec bpg` uses `bpgenc`/`bpgdec` if found on PATH
+- falls back to JPEG automatically if BPG binaries are unavailable
+
+Outputs:
+
+- `summary.json` aggregate metrics and settings
+- `per_image.json` per-sample details
+- `originals/`, `reconstructions/`, `comparisons/` JPEGs
+
+Modeling note:
+
+- The LDPC link is modeled as an idealized near-capacity decoder:
+  decode success if coded spectral efficiency is below estimated channel capacity; otherwise outage.
+
+## Compare DeepJSCC vs traditional on same random images
+
+Use `compare_pipelines.py` to sample one random image set, run both pipelines under the same channel conditions, and save side-by-side outputs.
+
+```bash
+python compare_pipelines.py \
+  --image-size 64 \
+  --num-images 8 \
+  --seed 42 \
+  --channel-type awgn \
+  --snr-db 10 \
+  --channel-uses 256 \
+  --deepjscc-weights artifacts/deepjscc_awgn_snr10/best.weights.h5 \
+  --model-variant base \
+  --latent-channels 128 \
+  --ldpc-rate 0.5 \
+  --mod-order 4 \
+  --codec bpg \
+  --output-dir artifacts/pipeline_comparison_awgn_snr10
+```
+
+Output structure:
+
+- `originals/` sampled originals
+- `deepjscc/` DeepJSCC reconstructions
+- `traditional/` traditional-pipeline reconstructions
+- `comparisons/` horizontal triplets: `original | deepjscc | traditional`
+- `summary.json` aggregate metrics/settings
+- `per_image.json` per-image metrics and traditional link details
