@@ -1,0 +1,5 @@
+# GPU runtime for TensorFlow on Linux (CUDA 12 via pip-managed NVIDIA wheels)
+# Install with: pip install -r requirements.txt -r requirements-gpu.txt
+
+# Keep this version aligned with your driver support; 550+ drivers are generally suitable.
+tensorflow[and-cuda]==2.16.1
