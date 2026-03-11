@@ -28,6 +28,10 @@ from traditional_baseline import (
 from deepjscc.sionna_link import simulate_real_ldpc_link_sionna
 
 
+def _ssim(y_true: tf.Tensor, y_pred: tf.Tensor) -> float:
+    return float(tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0)).numpy())
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Compare DeepJSCC vs traditional BPG/JPEG+LDPC baseline on same random images"
@@ -180,8 +184,8 @@ def main():
     )
 
     per_image = []
-    deepjscc_psnr, deepjscc_mae = [], []
-    traditional_psnr, traditional_mae = [], []
+    deepjscc_psnr, deepjscc_mae, deepjscc_ssim = [], [], []
+    traditional_psnr, traditional_mae, traditional_ssim = [], [], []
     deepjscc_clip_scores, traditional_clip_scores = [], []
     traditional_outages = 0
 
@@ -245,8 +249,10 @@ def main():
 
         d_psnr = _psnr(original, deep)
         d_mae = _mae(original, deep)
+        d_ssim = _ssim(original, deep)
         t_psnr = _psnr(original, trad)
         t_mae = _mae(original, trad)
+        t_ssim = _ssim(original, trad)
         d_clip = None
         t_clip = None
         if clip_scorer is not None:
@@ -255,8 +261,10 @@ def main():
 
         deepjscc_psnr.append(d_psnr)
         deepjscc_mae.append(d_mae)
+        deepjscc_ssim.append(d_ssim)
         traditional_psnr.append(t_psnr)
         traditional_mae.append(t_mae)
+        traditional_ssim.append(t_ssim)
         if d_clip is not None:
             deepjscc_clip_scores.append(d_clip)
             traditional_clip_scores.append(t_clip)
@@ -277,9 +285,11 @@ def main():
                 "index": i,
                 "deepjscc_psnr": d_psnr,
                 "deepjscc_mae": d_mae,
+                "deepjscc_ssim": d_ssim,
                 "deepjscc_clip_score": d_clip,
                 "traditional_psnr": t_psnr,
                 "traditional_mae": t_mae,
+                "traditional_ssim": t_ssim,
                 "traditional_clip_score": t_clip,
                 "traditional_success": bool(trad_success),
                 "traditional_codec_used": info["codec_used"],
@@ -322,6 +332,7 @@ def main():
             "latent_channels": args.latent_channels,
             "mean_psnr": float(np.mean(deepjscc_psnr)),
             "mean_mae": float(np.mean(deepjscc_mae)),
+            "mean_ssim": float(np.mean(deepjscc_ssim)),
             "mean_clip_score": float(np.mean(deepjscc_clip_scores)) if deepjscc_clip_scores else None,
         },
         "traditional": {
@@ -347,6 +358,7 @@ def main():
             "outage_rate": traditional_outages / max(1, args.num_images),
             "mean_psnr": float(np.mean(traditional_psnr)),
             "mean_mae": float(np.mean(traditional_mae)),
+            "mean_ssim": float(np.mean(traditional_ssim)),
             "mean_clip_score": (
                 float(np.mean(traditional_clip_scores)) if traditional_clip_scores else None
             ),

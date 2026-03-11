@@ -317,6 +317,27 @@ class PSNRMetric(keras.metrics.Metric):
         self.count.assign(0.0)
 
 
+class SSIMMetric(keras.metrics.Metric):
+    """Average SSIM over mini-batches."""
+
+    def __init__(self, name="ssim", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.total = self.add_weight(name="total", initializer="zeros")
+        self.count = self.add_weight(name="count", initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        values = tf.image.ssim(y_true, y_pred, max_val=1.0)
+        self.total.assign_add(tf.reduce_sum(values))
+        self.count.assign_add(tf.cast(tf.size(values), tf.float32))
+
+    def result(self):
+        return self.total / (self.count + 1e-8)
+
+    def reset_states(self):
+        self.total.assign(0.0)
+        self.count.assign(0.0)
+
+
 class ReconstructionLoss(keras.losses.Loss):
     """Hybrid pixel- and structure-aware reconstruction loss."""
 

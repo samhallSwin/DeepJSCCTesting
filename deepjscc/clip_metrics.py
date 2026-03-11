@@ -48,12 +48,35 @@ class CLIPImageSimilarity:
             cand_inputs = self._processor(images=list(cand), return_tensors="pt")
             ref_inputs = {k: v.to(self.device) for k, v in ref_inputs.items()}
             cand_inputs = {k: v.to(self.device) for k, v in cand_inputs.items()}
-            ref_features = self._model.get_image_features(**ref_inputs)
-            cand_features = self._model.get_image_features(**cand_inputs)
+            ref_features = self._extract_image_features(ref_inputs)
+            cand_features = self._extract_image_features(cand_inputs)
             ref_features = ref_features / ref_features.norm(dim=-1, keepdim=True).clamp_min(1e-8)
             cand_features = cand_features / cand_features.norm(dim=-1, keepdim=True).clamp_min(1e-8)
             scores = (ref_features * cand_features).sum(dim=-1)
         return scores.detach().cpu().numpy().astype(np.float32)
+
+    def _extract_image_features(self, model_inputs):
+        if hasattr(self._model, "get_image_features"):
+            outputs = self._model.get_image_features(**model_inputs)
+            if hasattr(outputs, "image_embeds"):
+                return outputs.image_embeds
+            if self._torch.is_tensor(outputs):
+                return outputs
+
+        if hasattr(self._model, "vision_model"):
+            vision_outputs = self._model.vision_model(**model_inputs)
+            if hasattr(vision_outputs, "pooler_output"):
+                features = vision_outputs.pooler_output
+            elif hasattr(vision_outputs, "last_hidden_state"):
+                features = vision_outputs.last_hidden_state[:, 0, :]
+            else:
+                raise TypeError(f"Unsupported CLIP vision output type: {type(vision_outputs)!r}")
+
+            if hasattr(self._model, "visual_projection"):
+                features = self._model.visual_projection(features)
+            return features
+
+        raise TypeError("Model does not expose usable CLIP image feature extraction APIs.")
 
     @staticmethod
     def _to_uint8_numpy(images) -> np.ndarray:

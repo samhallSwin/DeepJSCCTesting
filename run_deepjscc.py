@@ -14,7 +14,7 @@ import tensorflow as tf
 from deepjscc.channels import CHANNEL_CHOICES
 from deepjscc.clip_metrics import CLIPImageSimilarity
 from deepjscc.data import build_datasets, sample_random_images
-from deepjscc.model import MODEL_VARIANTS, DeepJSCC, PSNRMetric, ReconstructionLoss
+from deepjscc.model import MODEL_VARIANTS, DeepJSCC, PSNRMetric, ReconstructionLoss, SSIMMetric
 
 
 def configure_runtime(args):
@@ -50,7 +50,7 @@ def build_model(args):
             l1_weight=args.l1_loss_weight,
             ssim_weight=args.ssim_loss_weight,
         ),
-        metrics=[PSNRMetric(), tf.keras.metrics.MeanAbsoluteError(name="mae")],
+        metrics=[PSNRMetric(), SSIMMetric(), tf.keras.metrics.MeanAbsoluteError(name="mae")],
     )
     return model
 
@@ -221,6 +221,7 @@ def sample(args):
     recon = tf.clip_by_value(recon, 0.0, 1.0)
     clip_scorer = maybe_build_clip_scorer(args)
     clip_scores = clip_scorer.score_batch(images, recon) if clip_scorer is not None else None
+    ssim_scores = tf.image.ssim(images, recon, max_val=1.0).numpy()
 
     originals_dir = Path(args.output_dir) / "originals"
     recons_dir = Path(args.output_dir) / "reconstructions"
@@ -252,6 +253,8 @@ def sample(args):
     if clip_scores is not None:
         manifest["clip_score_mean"] = float(np.mean(clip_scores))
         manifest["clip_score_per_image"] = [float(x) for x in clip_scores]
+    manifest["ssim_mean"] = float(np.mean(ssim_scores))
+    manifest["ssim_per_image"] = [float(x) for x in ssim_scores]
     with open(Path(args.output_dir) / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 

@@ -173,6 +173,7 @@ Key options:
 - `--seed` random seed for reproducible sampling
 - `--output-dir` output folder (default `artifacts/deepjscc_samples`)
 - `--compute-clip-score` compute optional CLIP image-image similarity scores
+- training/evaluation now report `psnr`, `ssim`, and `mae`
 
 CLIP note:
 
@@ -185,6 +186,7 @@ Output structure:
 - `reconstructions/` model outputs as JPEG
 - `comparisons/` side-by-side `original | reconstruction` JPEG pairs
 - `manifest.json` run metadata
+  - includes `ssim_mean` and `ssim_per_image`
 
 ## Traditional baseline (BPG/JPEG + LDPC-rate-constrained link)
 
