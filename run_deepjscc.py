@@ -7,11 +7,14 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
+
 import tensorflow as tf
 
 from deepjscc.channels import CHANNEL_CHOICES
+from deepjscc.clip_metrics import CLIPImageSimilarity
 from deepjscc.data import build_datasets, sample_random_images
-from deepjscc.model import MODEL_VARIANTS, DeepJSCC, PSNRMetric
+from deepjscc.model import MODEL_VARIANTS, DeepJSCC, PSNRMetric, ReconstructionLoss
 
 
 def configure_runtime(args):
@@ -43,7 +46,10 @@ def build_model(args):
     )
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate),
-        loss=tf.keras.losses.MeanSquaredError(),
+        loss=ReconstructionLoss(
+            l1_weight=args.l1_loss_weight,
+            ssim_weight=args.ssim_loss_weight,
+        ),
         metrics=[PSNRMetric(), tf.keras.metrics.MeanAbsoluteError(name="mae")],
     )
     return model
@@ -62,6 +68,8 @@ def write_architecture_report(args, model: DeepJSCC, output_dir: Path):
     lines.append(f"train_snr_db_min: {args.train_snr_db_min}")
     lines.append(f"train_snr_db_max: {args.train_snr_db_max}")
     lines.append(f"rician_k: {args.rician_k}")
+    lines.append(f"l1_loss_weight: {args.l1_loss_weight}")
+    lines.append(f"ssim_loss_weight: {args.ssim_loss_weight}")
     lines.append("")
     lines.append(f"variant_spec: {model.variant}")
     lines.append("")
@@ -77,6 +85,22 @@ def write_architecture_report(args, model: DeepJSCC, output_dir: Path):
     lines.append("-" * 80)
     model.summary(print_fn=lines.append)
     (output_dir / "architecture.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def maybe_build_clip_scorer(args) -> CLIPImageSimilarity | None:
+    if not getattr(args, "compute_clip_score", False):
+        return None
+    return CLIPImageSimilarity(model_id=args.clip_model_id, device=args.clip_device)
+
+
+def compute_clip_score_for_dataset(model: DeepJSCC, dataset, clip_scorer: CLIPImageSimilarity) -> float:
+    scores: list[np.ndarray] = []
+    for batch_inputs, batch_targets in dataset:
+        preds = model(batch_inputs, training=False)
+        preds = tf.cast(tf.clip_by_value(preds, 0.0, 1.0), tf.float32)
+        batch_scores = clip_scorer.score_batch(batch_targets, preds)
+        scores.append(batch_scores)
+    return float(np.mean(np.concatenate(scores, axis=0))) if scores else float("nan")
 
 
 def train(args):
@@ -161,6 +185,9 @@ def evaluate(args):
         model.load_weights(args.weights)
 
     metrics = model.evaluate(test_ds, return_dict=True)
+    clip_scorer = maybe_build_clip_scorer(args)
+    if clip_scorer is not None:
+        metrics["clip_score"] = compute_clip_score_for_dataset(model, test_ds, clip_scorer)
     print(json.dumps(metrics, indent=2))
 
 
@@ -192,6 +219,8 @@ def sample(args):
     )
     recon = tf.cast(recon, tf.float32)
     recon = tf.clip_by_value(recon, 0.0, 1.0)
+    clip_scorer = maybe_build_clip_scorer(args)
+    clip_scores = clip_scorer.score_batch(images, recon) if clip_scorer is not None else None
 
     originals_dir = Path(args.output_dir) / "originals"
     recons_dir = Path(args.output_dir) / "reconstructions"
@@ -220,6 +249,9 @@ def sample(args):
         "image_size": args.image_size,
         "output_dir": str(Path(args.output_dir).resolve()),
     }
+    if clip_scores is not None:
+        manifest["clip_score_mean"] = float(np.mean(clip_scores))
+        manifest["clip_score_per_image"] = [float(x) for x in clip_scores]
     with open(Path(args.output_dir) / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
@@ -242,6 +274,8 @@ def parser():
         sp.add_argument("--train-snr-db-max", type=float, default=10.0)
         sp.add_argument("--rician-k", type=float, default=5.0)
         sp.add_argument("--learning-rate", type=float, default=1e-3)
+        sp.add_argument("--l1-loss-weight", type=float, default=0.8)
+        sp.add_argument("--ssim-loss-weight", type=float, default=0.2)
         sp.add_argument("--data-dir", type=str, default=None)
         sp.add_argument("--train-split", type=str, default="train[:80%]")
         sp.add_argument("--val-split", type=str, default="train[80%:90%]")
@@ -252,6 +286,9 @@ def parser():
         sp.add_argument("--split-seed", type=int, default=42)
         sp.add_argument("--require-gpu", action="store_true")
         sp.add_argument("--mixed-precision", action="store_true")
+        sp.add_argument("--compute-clip-score", action="store_true")
+        sp.add_argument("--clip-model-id", type=str, default="openai/clip-vit-base-patch32")
+        sp.add_argument("--clip-device", type=str, default=None)
 
     p_train = sub.add_parser("train", help="Train DeepJSCC model")
     add_shared(p_train)
@@ -279,6 +316,10 @@ def main():
     args = parser().parse_args()
     if args.train_snr_db_min > args.train_snr_db_max:
         raise ValueError("--train-snr-db-min must be <= --train-snr-db-max.")
+    if args.l1_loss_weight < 0.0 or args.ssim_loss_weight < 0.0:
+        raise ValueError("Loss weights must be non-negative.")
+    if args.l1_loss_weight == 0.0 and args.ssim_loss_weight == 0.0:
+        raise ValueError("At least one loss weight must be > 0.")
     configure_runtime(args)
     args.func(args)
 

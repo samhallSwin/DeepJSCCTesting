@@ -15,6 +15,7 @@ This repository provides a command-line DeepJSCC baseline to reconstruct **64x64
   - `--channel-type`
   - `--snr-db` for fixed-SNR evaluation/sampling
   - `--train-snr-db-min`, `--train-snr-db-max` for random-SNR training
+  - `--l1-loss-weight`, `--ssim-loss-weight` for the reconstruction objective
   - `--channel-uses`
   - `--latent-channels`
   - train/val/test TFDS splits
@@ -32,6 +33,12 @@ Optional Sionna backend for real LDPC:
 
 ```bash
 pip install -r requirements.txt -r requirements-sionna.txt
+```
+
+Optional CLIP-based image similarity metric:
+
+```bash
+pip install -r requirements.txt -r requirements-clip.txt
 ```
 
 ## GPU setup (optional)
@@ -65,6 +72,8 @@ python run_deepjscc.py train \
   --snr-db 10 \
   --train-snr-db-min 0 \
   --train-snr-db-max 20 \
+  --l1-loss-weight 0.8 \
+  --ssim-loss-weight 0.2 \
   --channel-uses 256 \
   --latent-channels 128 \
   --output-dir artifacts/deepjscc_awgn_snr10 \
@@ -94,6 +103,8 @@ python run_deepjscc.py train \
   --snr-db 10 \
   --train-snr-db-min 0 \
   --train-snr-db-max 20 \
+  --l1-loss-weight 0.8 \
+  --ssim-loss-weight 0.2 \
   --channel-uses 256 \
   --latent-channels 128 \
   --local-eurosat-dir ../datasets/EuroSAT_RGB \
@@ -115,6 +126,7 @@ Training note:
 - that sampled SNR is fixed for all channel symbols of that image
 - the same SNR is provided to both encoder and decoder as full CSI
 - `--snr-db` remains the fixed SNR used for validation, test, and `sample`
+- the default reconstruction loss is `0.8 * L1 + 0.2 * (1 - SSIM)`
 
 ## Evaluate
 
@@ -158,6 +170,12 @@ Key options:
 - `--num-images` number of random samples to save (default `8`)
 - `--seed` random seed for reproducible sampling
 - `--output-dir` output folder (default `artifacts/deepjscc_samples`)
+- `--compute-clip-score` compute optional CLIP image-image similarity scores
+
+CLIP note:
+
+- this repo reports CLIP image embedding cosine similarity between the original and reconstruction
+- this is an image-image proxy metric for semantic similarity, not the original text-image CLIPScore definition
 
 Output structure:
 
@@ -258,6 +276,7 @@ python compare_pipelines.py \
   --codec bpg \
   --link-model ideal \
   --ldpc-backend custom \
+  --compute-clip-score \
   --output-dir artifacts/pipeline_comparison_awgn_snr10
 ```
 

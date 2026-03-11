@@ -12,6 +12,7 @@ import numpy as np
 import tensorflow as tf
 
 from deepjscc.channels import CHANNEL_CHOICES
+from deepjscc.clip_metrics import CLIPImageSimilarity
 from deepjscc.data import sample_random_images
 from deepjscc.model import MODEL_VARIANTS, DeepJSCC
 from traditional_baseline import (
@@ -64,6 +65,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--ldpc-iters", type=int, default=30)
 
     p.add_argument("--output-dir", type=str, default="artifacts/pipeline_comparison")
+    p.add_argument("--compute-clip-score", action="store_true")
+    p.add_argument("--clip-model-id", type=str, default="openai/clip-vit-base-patch32")
+    p.add_argument("--clip-device", type=str, default=None)
     return p
 
 
@@ -128,6 +132,11 @@ def main():
     )
 
     deepjscc_model = build_deepjscc(args)
+    clip_scorer = (
+        CLIPImageSimilarity(model_id=args.clip_model_id, device=args.clip_device)
+        if args.compute_clip_score
+        else None
+    )
     deepjscc_recon = tf.clip_by_value(
         tf.cast(
             deepjscc_model(
@@ -173,6 +182,7 @@ def main():
     per_image = []
     deepjscc_psnr, deepjscc_mae = [], []
     traditional_psnr, traditional_mae = [], []
+    deepjscc_clip_scores, traditional_clip_scores = [], []
     traditional_outages = 0
 
     for i in range(args.num_images):
@@ -237,11 +247,19 @@ def main():
         d_mae = _mae(original, deep)
         t_psnr = _psnr(original, trad)
         t_mae = _mae(original, trad)
+        d_clip = None
+        t_clip = None
+        if clip_scorer is not None:
+            d_clip = float(clip_scorer.score_batch(original[None, ...], deep[None, ...])[0])
+            t_clip = float(clip_scorer.score_batch(original[None, ...], trad[None, ...])[0])
 
         deepjscc_psnr.append(d_psnr)
         deepjscc_mae.append(d_mae)
         traditional_psnr.append(t_psnr)
         traditional_mae.append(t_mae)
+        if d_clip is not None:
+            deepjscc_clip_scores.append(d_clip)
+            traditional_clip_scores.append(t_clip)
 
         original_u8 = _tensor_to_u8(original)
         deep_u8 = _tensor_to_u8(deep)
@@ -259,8 +277,10 @@ def main():
                 "index": i,
                 "deepjscc_psnr": d_psnr,
                 "deepjscc_mae": d_mae,
+                "deepjscc_clip_score": d_clip,
                 "traditional_psnr": t_psnr,
                 "traditional_mae": t_mae,
+                "traditional_clip_score": t_clip,
                 "traditional_success": bool(trad_success),
                 "traditional_codec_used": info["codec_used"],
                 "traditional_quality": info["quality"],
@@ -302,6 +322,7 @@ def main():
             "latent_channels": args.latent_channels,
             "mean_psnr": float(np.mean(deepjscc_psnr)),
             "mean_mae": float(np.mean(deepjscc_mae)),
+            "mean_clip_score": float(np.mean(deepjscc_clip_scores)) if deepjscc_clip_scores else None,
         },
         "traditional": {
             "codec_requested": args.codec,
@@ -326,6 +347,9 @@ def main():
             "outage_rate": traditional_outages / max(1, args.num_images),
             "mean_psnr": float(np.mean(traditional_psnr)),
             "mean_mae": float(np.mean(traditional_mae)),
+            "mean_clip_score": (
+                float(np.mean(traditional_clip_scores)) if traditional_clip_scores else None
+            ),
             "ldpc_impl": {
                 "codeword_length": args.ldpc_codeword_length,
                 "row_weight": args.ldpc_row_weight,

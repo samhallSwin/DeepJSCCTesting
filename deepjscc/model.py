@@ -37,7 +37,184 @@ MODEL_VARIANTS = {
         encoder_filters=(64, 128, 256),
         decoder_filters=(256, 128, 64, 32),
     ),
+    "base_wide": ModelVariant(
+        encoder_filters=(96, 192),
+        decoder_filters=(192, 96, 48),
+    ),
+    "large_wide": ModelVariant(
+        encoder_filters=(96, 192, 384),
+        decoder_filters=(384, 192, 96, 48),
+    ),
 }
+
+
+def _make_activation(name: str) -> layers.Layer:
+    return layers.Activation(name)
+
+
+class FiLM(layers.Layer):
+    """Feature-wise linear modulation driven by an SNR embedding."""
+
+    def __init__(self, channels: int, max_scale_delta: float = 0.25, max_shift: float = 0.25, name: str | None = None):
+        super().__init__(name=name)
+        self.channels = channels
+        self.max_scale_delta = max_scale_delta
+        self.max_shift = max_shift
+        self.gamma = layers.Dense(
+            channels,
+            kernel_initializer="zeros",
+            bias_initializer="zeros",
+            name=f"{name}_gamma" if name else None,
+        )
+        self.beta = layers.Dense(
+            channels,
+            kernel_initializer="zeros",
+            bias_initializer="zeros",
+            name=f"{name}_beta" if name else None,
+        )
+
+    def call(self, inputs, training=False):
+        x, snr_embedding = inputs
+        gamma = self.gamma(snr_embedding)
+        beta = self.beta(snr_embedding)
+        gamma = tf.tanh(gamma) * self.max_scale_delta
+        beta = tf.tanh(beta) * self.max_shift
+        gamma = tf.reshape(gamma, (-1, 1, 1, self.channels))
+        beta = tf.reshape(beta, (-1, 1, 1, self.channels))
+        gamma = tf.cast(gamma, x.dtype)
+        beta = tf.cast(beta, x.dtype)
+        return x * (1.0 + gamma) + beta
+
+
+class ConvFiLMBlock(layers.Layer):
+    def __init__(self, filters: int, kernel_size: int, activation: str, name: str):
+        super().__init__(name=name)
+        self.conv = layers.Conv2D(filters, kernel_size, strides=2, padding="same", activation=None)
+        self.film = FiLM(filters, name=f"{name}_film")
+        self.activation = _make_activation(activation)
+
+    def call(self, inputs, training=False):
+        x, snr_embedding = inputs
+        x = self.conv(x, training=training)
+        x = self.film((x, snr_embedding), training=training)
+        return self.activation(x)
+
+
+class DeconvFiLMBlock(layers.Layer):
+    def __init__(self, filters: int, kernel_size: int, activation: str, name: str):
+        super().__init__(name=name)
+        self.deconv = layers.Conv2DTranspose(
+            filters,
+            kernel_size,
+            strides=2,
+            padding="same",
+            activation=None,
+        )
+        self.film = FiLM(filters, name=f"{name}_film")
+        self.activation = _make_activation(activation)
+
+    def call(self, inputs, training=False):
+        x, snr_embedding = inputs
+        x = self.deconv(x, training=training)
+        x = self.film((x, snr_embedding), training=training)
+        return self.activation(x)
+
+
+class DeepJSCCEncoder(keras.Model):
+    def __init__(
+        self,
+        image_size: int,
+        channel_uses: int,
+        latent_channels: int,
+        variant: ModelVariant,
+        name: str = "encoder",
+    ):
+        super().__init__(name=name)
+        self.snr_mlp = keras.Sequential(
+            [
+                layers.Input(shape=(1,)),
+                layers.Dense(64, activation=variant.activation),
+                layers.Dense(128, activation=variant.activation),
+            ],
+            name="snr_encoder_mlp",
+        )
+        self.blocks = [
+            ConvFiLMBlock(
+                filters=filters,
+                kernel_size=variant.conv_kernel,
+                activation=variant.activation,
+                name=f"enc_block_{idx}",
+            )
+            for idx, filters in enumerate(variant.encoder_filters)
+        ]
+        self.bottleneck = ConvFiLMBlock(
+            filters=latent_channels,
+            kernel_size=variant.bottleneck_kernel,
+            activation=variant.activation,
+            name="enc_bottleneck",
+        )
+        self.flatten = layers.Flatten()
+        self.out_dense = layers.Dense(2 * channel_uses)
+
+    def call(self, inputs, training=False):
+        image, snr_db = inputs
+        snr_embedding = self.snr_mlp(snr_db, training=training)
+        x = image
+        for block in self.blocks:
+            x = block((x, snr_embedding), training=training)
+        x = self.bottleneck((x, snr_embedding), training=training)
+        x = self.flatten(x)
+        dense_input = tf.concat([x, tf.cast(snr_embedding, x.dtype)], axis=-1)
+        return self.out_dense(dense_input, training=training)
+
+
+class DeepJSCCDecoder(keras.Model):
+    def __init__(
+        self,
+        image_size: int,
+        channel_uses: int,
+        latent_channels: int,
+        variant: ModelVariant,
+        reduced_size: int,
+        name: str = "decoder",
+    ):
+        super().__init__(name=name)
+        self.snr_mlp = keras.Sequential(
+            [
+                layers.Input(shape=(1,)),
+                layers.Dense(64, activation=variant.activation),
+                layers.Dense(128, activation=variant.activation),
+            ],
+            name="snr_decoder_mlp",
+        )
+        self.pre_dense = layers.Dense(reduced_size * reduced_size * latent_channels, activation=None)
+        self.pre_film = FiLM(latent_channels, name="dec_pre_film")
+        self.pre_activation = _make_activation(variant.activation)
+        self.reshape_layer = layers.Reshape((reduced_size, reduced_size, latent_channels))
+        self.blocks = [
+            DeconvFiLMBlock(
+                filters=filters,
+                kernel_size=variant.conv_kernel,
+                activation=variant.activation,
+                name=f"dec_block_{idx}",
+            )
+            for idx, filters in enumerate(variant.decoder_filters)
+        ]
+        self.out_conv = layers.Conv2D(3, 3, padding="same", activation="sigmoid")
+        self.latent_channels = latent_channels
+        self.reduced_size = reduced_size
+
+    def call(self, inputs, training=False):
+        rx_symbols, snr_db = inputs
+        snr_embedding = self.snr_mlp(snr_db, training=training)
+        dense_input = tf.concat([rx_symbols, tf.cast(snr_embedding, rx_symbols.dtype)], axis=-1)
+        x = self.pre_dense(dense_input, training=training)
+        x = self.reshape_layer(x)
+        x = self.pre_film((x, snr_embedding), training=training)
+        x = self.pre_activation(x)
+        for block in self.blocks:
+            x = block((x, snr_embedding), training=training)
+        return self.out_conv(x, training=training)
 
 
 class DeepJSCC(keras.Model):
@@ -81,50 +258,22 @@ class DeepJSCC(keras.Model):
         self.snr_db = snr_db
         self.rician_k = rician_k
 
-        encoder_layers = [layers.Input(shape=(image_size, image_size, 4))]
-        for filters in variant.encoder_filters:
-            encoder_layers.append(
-                layers.Conv2D(
-                    filters,
-                    variant.conv_kernel,
-                    strides=2,
-                    padding="same",
-                    activation=variant.activation,
-                )
-            )
-        encoder_layers.extend(
-            [
-                layers.Conv2D(
-                    latent_channels,
-                    variant.bottleneck_kernel,
-                    strides=2,
-                    padding="same",
-                    activation=variant.activation,
-                ),
-                layers.Flatten(),
-                layers.Dense(2 * channel_uses),
-            ]
-        )
-        self.encoder = keras.Sequential(encoder_layers, name="encoder")
-
         reduced_size = image_size // downsample_factor
-        decoder_layers = [
-            layers.Input(shape=(2 * channel_uses + 1,)),
-            layers.Dense(reduced_size * reduced_size * latent_channels, activation=variant.activation),
-            layers.Reshape((reduced_size, reduced_size, latent_channels)),
-        ]
-        for filters in variant.decoder_filters:
-            decoder_layers.append(
-                layers.Conv2DTranspose(
-                    filters,
-                    variant.conv_kernel,
-                    strides=2,
-                    padding="same",
-                    activation=variant.activation,
-                )
-            )
-        decoder_layers.append(layers.Conv2D(3, 3, padding="same", activation="sigmoid"))
-        self.decoder = keras.Sequential(decoder_layers, name="decoder")
+        self.encoder = DeepJSCCEncoder(
+            image_size=image_size,
+            channel_uses=channel_uses,
+            latent_channels=latent_channels,
+            variant=variant,
+            name="encoder",
+        )
+        self.decoder = DeepJSCCDecoder(
+            image_size=image_size,
+            channel_uses=channel_uses,
+            latent_channels=latent_channels,
+            variant=variant,
+            reduced_size=reduced_size,
+            name="decoder",
+        )
 
     def _split_inputs(self, inputs):
         if not isinstance(inputs, dict):
@@ -137,17 +286,14 @@ class DeepJSCC(keras.Model):
 
     def call(self, inputs, training=False):
         image, snr_db = self._split_inputs(inputs)
-        snr_map = tf.ones_like(image[..., :1]) * tf.reshape(snr_db, (-1, 1, 1, 1))
-        encoder_input = tf.concat([image, snr_map], axis=-1)
-        symbols_ri = self.encoder(encoder_input, training=training)
+        symbols_ri = self.encoder((image, snr_db), training=training)
         rx_symbols = apply_channel(
             symbols_ri,
             channel_type=self.channel_type,
             snr_db=tf.squeeze(snr_db, axis=-1),
             rician_k=self.rician_k,
         )
-        decoder_input = tf.concat([rx_symbols, tf.cast(snr_db, rx_symbols.dtype)], axis=-1)
-        return self.decoder(decoder_input, training=training)
+        return self.decoder((rx_symbols, tf.cast(snr_db, rx_symbols.dtype)), training=training)
 
 
 class PSNRMetric(keras.metrics.Metric):
@@ -169,3 +315,31 @@ class PSNRMetric(keras.metrics.Metric):
     def reset_states(self):
         self.total.assign(0.0)
         self.count.assign(0.0)
+
+
+class ReconstructionLoss(keras.losses.Loss):
+    """Hybrid pixel- and structure-aware reconstruction loss."""
+
+    def __init__(
+        self,
+        l1_weight: float = 0.8,
+        ssim_weight: float = 0.2,
+        name: str = "reconstruction_loss",
+    ):
+        super().__init__(name=name)
+        self.l1_weight = l1_weight
+        self.ssim_weight = ssim_weight
+
+    def call(self, y_true, y_pred):
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+        l1 = tf.reduce_mean(tf.abs(y_true - y_pred), axis=(1, 2, 3))
+        ssim = tf.image.ssim(y_true, y_pred, max_val=1.0)
+        return self.l1_weight * l1 + self.ssim_weight * (1.0 - ssim)
+
+    def get_config(self):
+        return {
+            "l1_weight": self.l1_weight,
+            "ssim_weight": self.ssim_weight,
+            "name": self.name,
+        }

@@ -1,0 +1,7 @@
+# Optional: CLIP-based reconstruction similarity metric.
+# Install on top of base requirements:
+#   pip install -r requirements.txt -r requirements-clip.txt
+
+torch>=2.2
+transformers>=4.39
+Pillow>=10.0
