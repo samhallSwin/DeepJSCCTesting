@@ -47,6 +47,10 @@ def _preprocess_image(image: tf.Tensor, image_size: int) -> tf.Tensor:
     return tf.cast(image, tf.float32) / 255.0
 
 
+def _class_names_from_local_dir(local_eurosat_dir: str) -> list[str]:
+    return sorted([p.name for p in Path(local_eurosat_dir).iterdir() if p.is_dir()])
+
+
 def _list_local_image_files(local_eurosat_dir: str) -> list[str]:
     class_patterns = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]
     files: list[str] = []
@@ -130,6 +134,54 @@ def _build_local_datasets(
         return ds.prefetch(autotune)
 
     return prep(train_paths, True), prep(val_paths, False), prep(test_paths, False)
+
+
+def _build_local_labeled_test_dataset(
+    local_eurosat_dir: str,
+    image_size: int,
+    batch_size: int,
+    train_fraction: float,
+    val_fraction: float,
+    split_seed: int,
+    limit: int | None = None,
+):
+    files = _list_local_image_files(local_eurosat_dir)
+    if not files:
+        raise ValueError(
+            f"No image files found under '{local_eurosat_dir}'. Expected class subfolders with image files."
+        )
+
+    class_names = _class_names_from_local_dir(local_eurosat_dir)
+    class_to_idx = {name: idx for idx, name in enumerate(class_names)}
+    sorted_files = sorted(files)
+    labels = [class_to_idx[Path(path).parent.name] for path in sorted_files]
+    all_paths = tf.constant(sorted_files)
+    all_labels = tf.constant(labels, dtype=tf.int32)
+    shuffled_indices = tf.random.experimental.stateless_shuffle(tf.range(len(sorted_files)), seed=[split_seed, 0])
+    shuffled = tf.gather(all_paths, shuffled_indices)
+    shuffled_labels = tf.gather(all_labels, shuffled_indices)
+
+    n_total = len(files)
+    n_train = int(n_total * train_fraction)
+    n_val = int(n_total * val_fraction)
+    test_paths = shuffled[n_train + n_val :]
+    test_labels = shuffled_labels[n_train + n_val :]
+    if limit is not None:
+        test_paths = test_paths[:limit]
+        test_labels = test_labels[:limit]
+
+    autotune = tf.data.AUTOTUNE
+
+    def decode_image(path, label):
+        image = tf.io.read_file(path)
+        image = tf.image.decode_image(image, channels=3, expand_animations=False)
+        image.set_shape([None, None, 3])
+        return _preprocess_image(image, image_size), label
+
+    ds = tf.data.Dataset.from_tensor_slices((test_paths, test_labels))
+    ds = ds.map(decode_image, num_parallel_calls=autotune)
+    ds = ds.batch(batch_size).prefetch(autotune)
+    return ds, class_names
 
 
 def sample_random_images(
@@ -237,3 +289,45 @@ def build_datasets(
         return ds.prefetch(autotune)
 
     return prep(train_ds, True), prep(val_ds, False), prep(test_ds, False)
+
+
+def build_labeled_test_dataset(
+    image_size: int,
+    batch_size: int,
+    test_split: str = "train[90%:]",
+    data_dir: str | None = None,
+    local_eurosat_dir: str | None = None,
+    local_train_fraction: float = 0.8,
+    local_val_fraction: float = 0.1,
+    split_seed: int = 42,
+    limit: int | None = None,
+):
+    """Build labeled test dataset for downstream classification evaluation."""
+    local_path = _find_local_eurosat(local_eurosat_dir)
+    if local_path:
+        print(f"Using local EuroSAT_RGB dataset at: {local_path}")
+        return _build_local_labeled_test_dataset(
+            local_eurosat_dir=local_path,
+            image_size=image_size,
+            batch_size=batch_size,
+            train_fraction=local_train_fraction,
+            val_fraction=local_val_fraction,
+            split_seed=split_seed,
+            limit=limit,
+        )
+
+    print("Local EuroSAT_RGB dataset not found; falling back to tensorflow_datasets eurosat/rgb.")
+    ds, info = tfds.load(
+        name="eurosat/rgb",
+        split=test_split,
+        as_supervised=True,
+        with_info=True,
+        data_dir=data_dir,
+    )
+    class_names = list(info.features["label"].names)
+    autotune = tf.data.AUTOTUNE
+    ds = ds.map(lambda x, y: (_preprocess_image(x, image_size), tf.cast(y, tf.int32)), num_parallel_calls=autotune)
+    if limit is not None:
+        ds = ds.take(limit)
+    ds = ds.batch(batch_size).prefetch(autotune)
+    return ds, class_names

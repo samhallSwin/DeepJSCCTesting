@@ -43,6 +43,14 @@ pip install --index-url https://download.pytorch.org/whl/cpu torch
 pip install -r requirements-clip.txt
 ```
 
+Optional downstream EuroSAT land-cover classification evaluation:
+
+```bash
+pip install -r requirements.txt
+pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+pip install -r requirements-downstream.txt
+```
+
 ## GPU setup (optional)
 
 If you want GPU training, install GPU dependencies in addition to the base requirements:
@@ -293,6 +301,46 @@ To use explicit LDPC in the comparison script, set:
 - optional tuning: `--ldpc-codeword-length`, `--ldpc-row-weight`, `--ldpc-iters`
 
 Output structure:
+
+## Downstream land-cover classification
+
+Use `evaluate_downstream.py` to measure how well a pretrained EuroSAT classifier performs on:
+
+- original test images
+- DeepJSCC reconstructions
+- traditional baseline reconstructions
+
+This reports downstream top-1 accuracy, macro-F1, per-class accuracy, and confusion matrices for each source.
+
+Example:
+
+```bash
+python evaluate_downstream.py \
+  --image-size 64 \
+  --batch-size 32 \
+  --classifier-model-id cm93/resnet18-eurosat \
+  --classifier-device cpu \
+  --channel-type awgn \
+  --snr-db 10 \
+  --channel-uses 256 \
+  --deepjscc-weights artifacts/deepjscc_awgn_snr10/best.weights.h5 \
+  --model-variant base \
+  --latent-channels 128 \
+  --ldpc-rate 0.5 \
+  --mod-order 4 \
+  --codec bpg \
+  --link-model ideal \
+  --ldpc-backend custom \
+  --output-path artifacts/downstream_eval_summary.json
+```
+
+Recommended starting classifier:
+
+- `cm93/resnet18-eurosat`
+
+Larger alternative:
+
+- `cm93/vit-base-patch16-224-eurosat`
 
 - `originals/` sampled originals
 - `deepjscc/` DeepJSCC reconstructions
