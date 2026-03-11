@@ -81,7 +81,7 @@ class DeepJSCC(keras.Model):
         self.snr_db = snr_db
         self.rician_k = rician_k
 
-        encoder_layers = [layers.Input(shape=(image_size, image_size, 3))]
+        encoder_layers = [layers.Input(shape=(image_size, image_size, 4))]
         for filters in variant.encoder_filters:
             encoder_layers.append(
                 layers.Conv2D(
@@ -109,7 +109,7 @@ class DeepJSCC(keras.Model):
 
         reduced_size = image_size // downsample_factor
         decoder_layers = [
-            layers.Input(shape=(2 * channel_uses,)),
+            layers.Input(shape=(2 * channel_uses + 1,)),
             layers.Dense(reduced_size * reduced_size * latent_channels, activation=variant.activation),
             layers.Reshape((reduced_size, reduced_size, latent_channels)),
         ]
@@ -126,15 +126,28 @@ class DeepJSCC(keras.Model):
         decoder_layers.append(layers.Conv2D(3, 3, padding="same", activation="sigmoid"))
         self.decoder = keras.Sequential(decoder_layers, name="decoder")
 
+    def _split_inputs(self, inputs):
+        if not isinstance(inputs, dict):
+            raise TypeError("DeepJSCC expects inputs as a dict with keys 'image' and 'snr_db'.")
+        image = tf.cast(inputs["image"], tf.float32)
+        snr_db = tf.cast(inputs["snr_db"], tf.float32)
+        if snr_db.shape.rank == 1:
+            snr_db = tf.expand_dims(snr_db, axis=-1)
+        return image, snr_db
+
     def call(self, inputs, training=False):
-        symbols_ri = self.encoder(inputs, training=training)
+        image, snr_db = self._split_inputs(inputs)
+        snr_map = tf.ones_like(image[..., :1]) * tf.reshape(snr_db, (-1, 1, 1, 1))
+        encoder_input = tf.concat([image, snr_map], axis=-1)
+        symbols_ri = self.encoder(encoder_input, training=training)
         rx_symbols = apply_channel(
             symbols_ri,
             channel_type=self.channel_type,
-            snr_db=self.snr_db,
+            snr_db=tf.squeeze(snr_db, axis=-1),
             rician_k=self.rician_k,
         )
-        return self.decoder(rx_symbols, training=training)
+        decoder_input = tf.concat([rx_symbols, tf.cast(snr_db, rx_symbols.dtype)], axis=-1)
+        return self.decoder(decoder_input, training=training)
 
 
 class PSNRMetric(keras.metrics.Metric):

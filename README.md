@@ -13,7 +13,8 @@ This repository provides a command-line DeepJSCC baseline to reconstruct **64x64
 - CLI-configurable key parameters, including:
   - `--model-variant` (`tiny`, `small`, `base`, `large`)
   - `--channel-type`
-  - `--snr-db`
+  - `--snr-db` for fixed-SNR evaluation/sampling
+  - `--train-snr-db-min`, `--train-snr-db-max` for random-SNR training
   - `--channel-uses`
   - `--latent-channels`
   - train/val/test TFDS splits
@@ -62,6 +63,8 @@ python run_deepjscc.py train \
   --model-variant base \
   --channel-type awgn \
   --snr-db 10 \
+  --train-snr-db-min 0 \
+  --train-snr-db-max 20 \
   --channel-uses 256 \
   --latent-channels 128 \
   --output-dir artifacts/deepjscc_awgn_snr10 \
@@ -89,6 +92,8 @@ python run_deepjscc.py train \
   --epochs 2 \
   --channel-type awgn \
   --snr-db 10 \
+  --train-snr-db-min 0 \
+  --train-snr-db-max 20 \
   --channel-uses 256 \
   --latent-channels 128 \
   --local-eurosat-dir ../datasets/EuroSAT_RGB \
@@ -103,6 +108,13 @@ For local-folder mode, splits are controlled by:
 - `--local-val-fraction` (default `0.1`)
 - test fraction is the remainder
 - `--split-seed` controls deterministic split shuffling
+
+Training note:
+
+- during `train`, the loader samples one SNR uniformly per image from the configured training range
+- that sampled SNR is fixed for all channel symbols of that image
+- the same SNR is provided to both encoder and decoder as full CSI
+- `--snr-db` remains the fixed SNR used for validation, test, and `sample`
 
 ## Evaluate
 

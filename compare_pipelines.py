@@ -77,7 +77,13 @@ def build_deepjscc(args) -> DeepJSCC:
         snr_db=args.snr_db,
         rician_k=args.rician_k,
     )
-    _ = model(tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32), training=False)
+    _ = model(
+        {
+            "image": tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32),
+            "snr_db": tf.fill((1, 1), tf.cast(args.snr_db, tf.float32)),
+        },
+        training=False,
+    )
     model.load_weights(args.deepjscc_weights)
     return model
 
@@ -123,7 +129,16 @@ def main():
 
     deepjscc_model = build_deepjscc(args)
     deepjscc_recon = tf.clip_by_value(
-        tf.cast(deepjscc_model(images, training=False), tf.float32),
+        tf.cast(
+            deepjscc_model(
+                {
+                    "image": images,
+                    "snr_db": tf.fill((tf.shape(images)[0], 1), tf.cast(args.snr_db, tf.float32)),
+                },
+                training=False,
+            ),
+            tf.float32,
+        ),
         0.0,
         1.0,
     )

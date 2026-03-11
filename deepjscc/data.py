@@ -22,6 +22,26 @@ def _preprocess(image, _label, image_size: int):
     return image, image
 
 
+def _attach_snr(
+    images: tf.Tensor,
+    training: bool,
+    snr_db: float,
+    snr_db_min: float,
+    snr_db_max: float,
+):
+    batch_size = tf.shape(images)[0]
+    if training:
+        snr = tf.random.uniform(
+            shape=(batch_size, 1),
+            minval=snr_db_min,
+            maxval=snr_db_max,
+            dtype=tf.float32,
+        )
+    else:
+        snr = tf.fill((batch_size, 1), tf.cast(snr_db, tf.float32))
+    return {"image": images, "snr_db": snr}, images
+
+
 def _preprocess_image(image: tf.Tensor, image_size: int) -> tf.Tensor:
     image = tf.image.resize(image, (image_size, image_size), method="bilinear")
     return tf.cast(image, tf.float32) / 255.0
@@ -51,6 +71,9 @@ def _build_local_datasets(
     local_eurosat_dir: str,
     image_size: int,
     batch_size: int,
+    snr_db: float,
+    snr_db_min: float,
+    snr_db_max: float,
     train_fraction: float,
     val_fraction: float,
     split_seed: int,
@@ -93,7 +116,18 @@ def _build_local_datasets(
             ds = ds.shuffle(min(4096, n_train), seed=split_seed, reshuffle_each_iteration=True)
         ds = ds.map(decode_image, num_parallel_calls=autotune)
         ds = ds.map(lambda x, y: _preprocess(x, y, image_size), num_parallel_calls=autotune)
-        return ds.batch(batch_size).prefetch(autotune)
+        ds = ds.batch(batch_size)
+        ds = ds.map(
+            lambda images, targets: _attach_snr(
+                images,
+                training=training,
+                snr_db=snr_db,
+                snr_db_min=snr_db_min,
+                snr_db_max=snr_db_max,
+            ),
+            num_parallel_calls=autotune,
+        )
+        return ds.prefetch(autotune)
 
     return prep(train_paths, True), prep(val_paths, False), prep(test_paths, False)
 
@@ -148,6 +182,9 @@ def sample_random_images(
 def build_datasets(
     image_size: int,
     batch_size: int,
+    snr_db: float = 10.0,
+    train_snr_db_min: float = 10.0,
+    train_snr_db_max: float = 10.0,
     train_split: str = "train[:80%]",
     val_split: str = "train[80%:90%]",
     test_split: str = "train[90%:]",
@@ -165,6 +202,9 @@ def build_datasets(
             local_eurosat_dir=local_path,
             image_size=image_size,
             batch_size=batch_size,
+            snr_db=snr_db,
+            snr_db_min=train_snr_db_min,
+            snr_db_max=train_snr_db_max,
             train_fraction=local_train_fraction,
             val_fraction=local_val_fraction,
             split_seed=split_seed,
@@ -183,7 +223,17 @@ def build_datasets(
         ds = ds.map(lambda x, y: _preprocess(x, y, image_size), num_parallel_calls=autotune)
         if training:
             ds = ds.shuffle(4096, reshuffle_each_iteration=True)
-        ds = ds.batch(batch_size).prefetch(autotune)
-        return ds
+        ds = ds.batch(batch_size)
+        ds = ds.map(
+            lambda images, targets: _attach_snr(
+                images,
+                training=training,
+                snr_db=snr_db,
+                snr_db_min=train_snr_db_min,
+                snr_db_max=train_snr_db_max,
+            ),
+            num_parallel_calls=autotune,
+        )
+        return ds.prefetch(autotune)
 
     return prep(train_ds, True), prep(val_ds, False), prep(test_ds, False)

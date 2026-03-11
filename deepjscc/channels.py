@@ -10,6 +10,7 @@ CHANNEL_CHOICES = ("none", "awgn", "rayleigh", "rician")
 
 def snr_db_to_noise_std(snr_db: tf.Tensor) -> tf.Tensor:
     """Convert SNR (dB) to noise std for complex AWGN with unit signal power."""
+    snr_db = tf.cast(snr_db, tf.float32)
     snr_linear = tf.pow(10.0, snr_db / 10.0)
     noise_var = 1.0 / (2.0 * snr_linear)
     return tf.sqrt(noise_var)
@@ -38,7 +39,7 @@ def normalize_complex_power(x_c: tf.Tensor, eps: float = 1e-8) -> tf.Tensor:
 def apply_channel(
     symbols_ri: tf.Tensor,
     channel_type: str,
-    snr_db: float,
+    snr_db: tf.Tensor | float,
     rician_k: float = 5.0,
 ) -> tf.Tensor:
     """Apply selected channel to real-imag symbols and return same shape."""
@@ -54,7 +55,13 @@ def apply_channel(
         return tf.cast(_to_ri(x_c), input_dtype)
 
     batch_shape = tf.shape(x_c)
-    noise_std = snr_db_to_noise_std(tf.cast(snr_db, tf.float32))
+    noise_std = snr_db_to_noise_std(snr_db)
+    if noise_std.shape.rank == 0:
+        noise_std = tf.fill((tf.shape(x_c)[0],), noise_std)
+    noise_std = tf.reshape(
+        noise_std,
+        tf.concat([[tf.shape(x_c)[0]], tf.ones(tf.rank(x_c) - 1, dtype=tf.int32)], axis=0),
+    )
 
     noise = tf.complex(
         tf.random.normal(batch_shape, stddev=noise_std),

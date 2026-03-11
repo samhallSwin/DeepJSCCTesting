@@ -59,6 +59,8 @@ def write_architecture_report(args, model: DeepJSCC, output_dir: Path):
     lines.append(f"latent_channels: {args.latent_channels}")
     lines.append(f"channel_type: {args.channel_type}")
     lines.append(f"snr_db: {args.snr_db}")
+    lines.append(f"train_snr_db_min: {args.train_snr_db_min}")
+    lines.append(f"train_snr_db_max: {args.train_snr_db_max}")
     lines.append(f"rician_k: {args.rician_k}")
     lines.append("")
     lines.append(f"variant_spec: {model.variant}")
@@ -81,6 +83,9 @@ def train(args):
     train_ds, val_ds, _ = build_datasets(
         image_size=args.image_size,
         batch_size=args.batch_size,
+        snr_db=args.snr_db,
+        train_snr_db_min=args.train_snr_db_min,
+        train_snr_db_max=args.train_snr_db_max,
         train_split=args.train_split,
         val_split=args.val_split,
         test_split=args.test_split,
@@ -92,7 +97,13 @@ def train(args):
     )
 
     model = build_model(args)
-    _ = model(tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32), training=False)
+    _ = model(
+        {
+            "image": tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32),
+            "snr_db": tf.fill((1, 1), tf.cast(args.snr_db, tf.float32)),
+        },
+        training=False,
+    )
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     write_architecture_report(args, model, Path(args.output_dir))
@@ -124,6 +135,9 @@ def evaluate(args):
     _, _, test_ds = build_datasets(
         image_size=args.image_size,
         batch_size=args.batch_size,
+        snr_db=args.snr_db,
+        train_snr_db_min=args.train_snr_db_min,
+        train_snr_db_max=args.train_snr_db_max,
         train_split=args.train_split,
         val_split=args.val_split,
         test_split=args.test_split,
@@ -136,7 +150,13 @@ def evaluate(args):
 
     model = build_model(args)
     # Subclassed models must be built before loading weights.
-    _ = model(tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32), training=False)
+    _ = model(
+        {
+            "image": tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32),
+            "snr_db": tf.fill((1, 1), tf.cast(args.snr_db, tf.float32)),
+        },
+        training=False,
+    )
     if args.weights:
         model.load_weights(args.weights)
 
@@ -154,10 +174,22 @@ def sample(args):
     )
 
     model = build_model(args)
-    _ = model(tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32), training=False)
+    _ = model(
+        {
+            "image": tf.zeros((1, args.image_size, args.image_size, 3), dtype=tf.float32),
+            "snr_db": tf.fill((1, 1), tf.cast(args.snr_db, tf.float32)),
+        },
+        training=False,
+    )
     model.load_weights(args.weights)
 
-    recon = model(images, training=False)
+    recon = model(
+        {
+            "image": images,
+            "snr_db": tf.fill((tf.shape(images)[0], 1), tf.cast(args.snr_db, tf.float32)),
+        },
+        training=False,
+    )
     recon = tf.cast(recon, tf.float32)
     recon = tf.clip_by_value(recon, 0.0, 1.0)
 
@@ -206,6 +238,8 @@ def parser():
         sp.add_argument("--model-variant", choices=tuple(MODEL_VARIANTS.keys()), default="base")
         sp.add_argument("--channel-type", choices=CHANNEL_CHOICES, default="awgn")
         sp.add_argument("--snr-db", type=float, default=10.0)
+        sp.add_argument("--train-snr-db-min", type=float, default=10.0)
+        sp.add_argument("--train-snr-db-max", type=float, default=10.0)
         sp.add_argument("--rician-k", type=float, default=5.0)
         sp.add_argument("--learning-rate", type=float, default=1e-3)
         sp.add_argument("--data-dir", type=str, default=None)
@@ -243,6 +277,8 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    if args.train_snr_db_min > args.train_snr_db_max:
+        raise ValueError("--train-snr-db-min must be <= --train-snr-db-max.")
     configure_runtime(args)
     args.func(args)
 
