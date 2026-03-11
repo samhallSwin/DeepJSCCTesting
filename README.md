@@ -38,7 +38,9 @@ pip install -r requirements.txt -r requirements-sionna.txt
 Optional CLIP-based image similarity metric:
 
 ```bash
-pip install -r requirements.txt -r requirements-clip.txt
+pip install -r requirements.txt
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+pip install -r requirements-clip.txt
 ```
 
 ## GPU setup (optional)

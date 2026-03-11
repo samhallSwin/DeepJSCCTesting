@@ -18,10 +18,17 @@ class CLIPImageSimilarity:
         try:
             import torch
             from transformers import AutoProcessor, CLIPModel
-        except ImportError as exc:
+        except ModuleNotFoundError as exc:
             raise ImportError(
                 "CLIP metrics require optional dependencies. Install with: "
                 "pip install -r requirements.txt -r requirements-clip.txt"
+            ) from exc
+        except ImportError as exc:
+            raise RuntimeError(
+                "CLIP dependencies are installed, but PyTorch failed to load correctly. "
+                "This usually means the installed torch build is incompatible with the local "
+                "CUDA runtime/driver. Original error: "
+                f"{exc}"
             ) from exc
 
         self._torch = torch
